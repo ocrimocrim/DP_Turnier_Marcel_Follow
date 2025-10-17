@@ -1,67 +1,60 @@
+# main.py
 import logging
 import os
 from datetime import datetime
-
 from event_id import get_event_id
-from fetch_scorecard import fetch_scorecard
 from parser import parse_scorecard
-from discord_notify import send_discord_message
-
-# Logging Setup
-LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-log_file = os.path.join(LOG_DIR, f"run_{datetime.utcnow().strftime('%Y-%m-%dT%H-%M-%S')}.log")
+from discord_notifier import send_discord_update
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.FileHandler(log_file, encoding="utf-8"),
-        logging.StreamHandler()
-    ]
 )
 
-def safe_step(step_name, func, *args, **kwargs):
-    """Führt einen Schritt aus und fängt alle Fehler ab, damit der Bot stabil bleibt."""
-    logging.info(f"🟦 Starte Schritt: {step_name}")
-    try:
-        result = func(*args, **kwargs)
-        logging.info(f"✅ Schritt erfolgreich: {step_name}")
-        return result
-    except Exception as e:
-        logging.exception(f"❌ Fehler in Schritt {step_name}: {e}")
-        return None
-
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
 
 def main():
-    logging.info("🚀 Starte DPWT Marcel Bot – Debug Modus aktiviert")
-    logging.info(f"Aktuelles Datum: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    logging.info("Starte DPWT Marcel Follow Bot")
 
-    # Schritt 1 – Turnier/Event finden
-    event_id = safe_step("Event-ID ermitteln", get_event_id)
-    if not event_id:
-        logging.warning("Event-ID konnte nicht ermittelt werden. Bot beendet sich kontrolliert.")
-        return
+    try:
+        # 1) Event-ID abrufen
+        event_id = get_event_id()
+        if not event_id:
+            logging.error("Keine Event-ID gefunden. Abbruch.")
+            return
+        logging.info(f"Aktive Event-ID: {event_id}")
 
-    # Schritt 2 – Scorecard abrufen
-    raw_path = safe_step("Scorecard abrufen", fetch_scorecard, event_id=event_id)
-    if not raw_path or not os.path.exists(raw_path):
-        logging.warning("Scorecard-Datei fehlt oder konnte nicht geladen werden.")
-        return
+        # 2) Scorecard abrufen und speichern
+        player_id = 35703  # Marcel Schneider
+        scorecard_url = f"https://www.europeantour.com/api/sportdata/Scorecard/Strokeplay/Event/{event_id}/Player/{player_id}"
 
-    # Schritt 3 – Scorecard parsen
-    parsed_path = safe_step("Scorecard parsen", parse_scorecard, raw_path)
-    if not parsed_path or not os.path.exists(parsed_path):
-        logging.warning("Parsing-Ergebnis fehlt. Runde wird übersprungen.")
-        return
+        import requests
+        response = requests.get(scorecard_url, timeout=20)
+        if response.status_code != 200:
+            logging.error(f"Fehler beim Abruf der Scorecard: HTTP {response.status_code}")
+            return
 
-    # Schritt 4 – Discord Nachricht senden
-    sent = safe_step("Discord-Nachricht senden", send_discord_message, parsed_path)
-    if sent is None:
-        logging.warning("Discord-Versand übersprungen oder fehlgeschlagen.")
+        raw_path = os.path.join(DATA_DIR, f"scorecard_{player_id}.json")
+        with open(raw_path, "w", encoding="utf-8") as f:
+            f.write(response.text)
+        logging.info(f"Scorecard gespeichert unter {raw_path}")
 
-    logging.info("🏁 Bot-Lauf abgeschlossen – alle Module verarbeitet.")
+        # 3) Scorecard parsen
+        parsed_path = parse_scorecard(raw_path)
+        if not parsed_path:
+            logging.warning("Keine Scorecard-Daten geparst.")
+            return
 
+        # 4) Discord-Update senden
+        send_discord_update(parsed_path)
+
+        logging.info("Durchlauf abgeschlossen")
+
+    except Exception as e:
+        logging.exception(f"Fehler im Hauptlauf: {e}")
 
 if __name__ == "__main__":
+    logging.info(f"--- Lauf gestartet {datetime.utcnow().isoformat()} ---")
     main()
+    logging.info(f"--- Lauf beendet {datetime.utcnow().isoformat()} ---")
