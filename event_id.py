@@ -16,7 +16,6 @@ SESSION.headers.update({
 def _get(url: str, allow_jina: bool = False) -> str:
     tries = []
     if allow_jina:
-        # Jina voranstellen, damit statische Inhalte auch ohne JS erreichbar sind
         if url.startswith("https://"):
             tries.append(JINA + url[len("https://"):])
         elif url.startswith("http://"):
@@ -73,22 +72,18 @@ def _deep_find_event_id(x) -> int | None:
     return None
 
 def _event_id_from_text(blob: str) -> int | None:
-    # 1) direkte Sportdata-URL im Text
     m = RX_EVENT_LOAD_URL.search(blob)
     if m:
         try: return int(m.group(1))
         except: pass
-    # 2) "leaderboard-strokeplay-<id>"
     m = RX_LEADERBOARD_DOC_ID.search(blob)
     if m:
         try: return int(m.group(1))
         except: pass
-    # 3) "EventId": <id>
     m = RX_EVENT_ID_KEY.search(blob)
     if m:
         try: return int(m.group(1))
         except: pass
-    # 4) eingebettete JSON-Blöcke durchsuchen
     for m in re.finditer(r'<script[^>]*>\s*({.*?})\s*</script>', blob, re.S | re.I):
         raw = m.group(1)
         for candidate in (raw, re.sub(r'(?://.*?$)|/\*.*?\*/', '', raw, flags=re.M | re.S)):
@@ -102,23 +97,20 @@ def _event_id_from_text(blob: str) -> int | None:
     return None
 
 def _call_resolvers_for_path(path: str) -> int | None:
-    """Ruft die internen Resolver mit dem Seitenpfad auf und versucht, die ID aus deren JSON zu ziehen."""
     for base_path in RESOLVER_PATHS:
         url = f"{BASE}{base_path}?{urlencode({'path': path})}"
         try:
-            txt = _get(url, allow_jina=False)  # Resolver direkt
+            txt = _get(url, allow_jina=False)
         except Exception as e:
             logging.debug(f"resolver miss {url} because {e}")
             continue
 
-        # schnelle Treffer
         for rx in (RX_EVENT_LOAD_URL, RX_LEADERBOARD_DOC_ID, RX_EVENT_ID_KEY):
             m = rx.search(txt)
             if m:
                 try: return int(m.group(1))
                 except: continue
 
-        # strukturiert parsen
         try:
             data = json.loads(txt)
         except Exception:
@@ -129,18 +121,9 @@ def _call_resolvers_for_path(path: str) -> int | None:
                 return got
     return None
 
-# ------------- PUBLIC API -------------
+# ------------- CORE ----------------
 def extract_event_id(event_page_url: str) -> int | None:
-    """
-    Holt die EventId ausschließlich *von der Leaderboard-Seite mit round=4*.
-    Reihenfolge:
-      1) Leaderboard HTML via Jina → direkte Muster / JSON
-      2) Leaderboard HTML direkt (ohne Proxy) → direkte Muster / JSON
-      3) Resolver-APIs für denselben Pfad (mit und ohne ?round=4)
-      4) Als Zusatz: geladene JS-Bundles (/dist/js/*.js) abklappern und dort nach Mustern suchen
-    """
     lb_url = build_leaderboard_page(event_page_url)
-    # 1) via Jina
     try:
         html_jina = _get(lb_url, allow_jina=True)
         eid = _event_id_from_text(html_jina)
@@ -150,7 +133,6 @@ def extract_event_id(event_page_url: str) -> int | None:
     except Exception as e:
         logging.debug(f"leaderboard via Jina miss: {e}")
 
-    # 2) direkt
     try:
         html_direct = _get(lb_url, allow_jina=False)
         eid = _event_id_from_text(html_direct)
@@ -160,8 +142,7 @@ def extract_event_id(event_page_url: str) -> int | None:
     except Exception as e:
         logging.debug(f"leaderboard direct miss: {e}")
 
-    # 3) Resolver-APIs für denselben Pfad
-    path_with_round = urlparse(lb_url).path  # nur der Pfad, Query wird von Resolver ohnehin ignoriert
+    path_with_round = urlparse(lb_url).path
     eid = _call_resolvers_for_path(path_with_round)
     if eid:
         logging.info(f"EventId Quelle Resolver (with path) {eid}")
@@ -172,13 +153,11 @@ def extract_event_id(event_page_url: str) -> int | None:
         logging.info(f"EventId Quelle Resolver (root) {eid}")
         return eid
 
-    # 4) geladene JS-Bundles der Seite durchsuchen
     try:
         base_html = html_direct if 'html_direct' in locals() else _get(lb_url, allow_jina=False)
         script_srcs = RX_SCRIPT_SRC.findall(base_html)
         seen = set()
         for src in script_srcs:
-            # absolute URL bauen
             src_abs = src if src.startswith("http") else urljoin(BASE, src)
             if src_abs in seen:
                 continue
@@ -197,3 +176,31 @@ def extract_event_id(event_page_url: str) -> int | None:
 
     logging.info("EventId wurde nicht gefunden")
     return None
+
+# ------------- PUBLIC WRAPPER ----------------
+def get_event_id() -> int | None:
+    """
+    Findet das aktuelle Turnier unter "Playing this week"
+    und gibt die EventId zurück.
+    """
+    try:
+        resp = _get(f"{BASE}/dpworld-tour/playing-this-week/", allow_jina=True)
+        m = re.search(r'/dpworld-tour/([a-z0-9-]+)/', resp)
+        if not m:
+            logging.info("Kein Playing this week-Slug gefunden.")
+            return None
+        slug = m.group(1)
+        event_page = f"{BASE}/dpworld-tour/{slug}/"
+        eid = extract_event_id(event_page)
+        if eid:
+            logging.info(f"EventId erfolgreich gefunden: {eid}")
+            return eid
+        logging.info("Keine EventId gefunden.")
+        return None
+    except Exception as e:
+        logging.exception(f"Fehler in get_event_id(): {e}")
+        return None
+
+
+if __name__ == "__main__":
+    print(get_event_id())
