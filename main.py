@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import sys
 import logging
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
+
 from event_id import extract_event_id, build_leaderboard_page
+from scorecard import fetch_scorecard, build_snapshot
 
 logging.basicConfig(
     level=logging.INFO,
@@ -11,14 +15,20 @@ logging.basicConfig(
 
 USAGE = """\
 Verwendung:
-  python main.py <event-seiten-url-oder-leaderboard-url>
+  python main.py <Event-URL ODER Leaderboard-URL>
 
-Beispiel (Eventseite):
+Beispiele:
   python main.py https://www.europeantour.com/dpworld-tour/dp-world-india-championship-2025/
-
-Beispiel (Leaderboard direkt):
   python main.py https://www.europeantour.com/dpworld-tour/dp-world-india-championship-2025/leaderboard?round=4
 """
+
+def event_base_url_from_any(url: str) -> str:
+    pu = urlparse(url)
+    parts = pu.path.rstrip("/").split("/")
+    if parts and parts[-1].startswith("leaderboard"):
+        parts = parts[:-1]
+    base_path = "/".join(parts) + "/"
+    return urlunparse((pu.scheme, pu.netloc, base_path, "", "", ""))
 
 def main():
     if len(sys.argv) != 2:
@@ -26,27 +36,34 @@ def main():
         sys.exit(1)
 
     raw_url = sys.argv[1].strip()
-    if not raw_url.startswith("http"):
+    if not raw_url.startswith(("http://", "https://")):
         print(USAGE)
         sys.exit(1)
 
-    # Falls keine round=4-URL übergeben wurde, baue sie aus der Eventseite
-    path = urlparse(raw_url).path
-    if not path.endswith("/leaderboard"):
-        leaderboard_url = build_leaderboard_page(raw_url)
-    else:
-        leaderboard_url = raw_url
-
+    # 1) Event-Basis-URL ableiten, Leaderboard-URL nur fürs Log
+    event_base_url = event_base_url_from_any(raw_url)
+    leaderboard_url = build_leaderboard_page(event_base_url)
     logging.info(f"Leaderboard Seite {leaderboard_url}")
 
-    # Nur Subtask 1: EventId extrahieren
-    eid = extract_event_id(raw_url)  # Funktion erwartet Event-**Seiten**-URL
+    # 2) EventId ziehen (Subtask 1)
+    eid = extract_event_id(event_base_url)
     if not eid:
         logging.info("EventId wurde nicht gefunden.")
         sys.exit(2)
-
     logging.info(f"EventId {eid}")
-    print(eid)
 
-if __name__ == "__main__":
-    main()
+    # 3) Scorecard holen (Subtask 2)
+    sc = fetch_scorecard(eid)
+    snap = build_snapshot(sc)  # nimmt default: höchste vorhandene Runde
+
+    # 4) Ausgabe – kompakt und maschinenlesbar
+    print("--- SCORECARD SNAPSHOT ---")
+    print(f"EventId:      {snap['eventId']}")
+    print(f"PlayerId:     {snap['playerId']}")
+    print(f"LastUpdated:  {snap['lastUpdated']}")
+
+    r = snap["round"]
+    if r:
+        print(f"RoundNo:      {r['roundNo']}  (Course {r['courseNo']})")
+        print(f"Strokes:      IN {r['strokesIn']}  OUT {r['strokesOut']}  TOTAL {r['strokesTotal']}  (ToPar {r['scoreToPar']})")
+        print(f"HolesPlayed:
