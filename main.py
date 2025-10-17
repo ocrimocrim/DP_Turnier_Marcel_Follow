@@ -1,60 +1,73 @@
 # main.py
 import logging
-import os
+import sys
 from datetime import datetime
-from event_id import get_event_id
-from parser import parse_scorecard
-from discord_notifier import send_discord_update
 
+from event_id import extract_event_id
+from fetch_scorecard import fetch_scorecard
+from parser import parse_scorecard
+from discord_notify import send_discord_message
+
+# --------------------------------------------------------------------
+# Logging Setup
+# --------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
+# --------------------------------------------------------------------
+# Konstanten
+# --------------------------------------------------------------------
+TOURNAMENT_BASE = "https://www.europeantour.com/dpworld-tour"
+MARCEL_SLUG = "/dp-world-india-championship-2025"
+PLAYER_ID = 35703
 
+# --------------------------------------------------------------------
+# Hauptlogik
+# --------------------------------------------------------------------
 def main():
     logging.info("Starte DPWT Marcel Follow Bot")
 
+    event_page_url = f"{TOURNAMENT_BASE}{MARCEL_SLUG}"
+    logging.info(f"Turnierseite: {event_page_url}")
+
+    # EventId finden
+    event_id = extract_event_id(event_page_url)
+    if not event_id:
+        logging.error("EventId wurde nicht gefunden. Abbruch.")
+        return
+    logging.info(f"EventId erkannt: {event_id}")
+
+    # Scorecard abrufen
+    scorecard_path = fetch_scorecard(event_id)
+    if not scorecard_path:
+        logging.error("Scorecard konnte nicht abgerufen werden. Abbruch.")
+        return
+
+    # Scorecard parsen
+    parsed_path = parse_scorecard(scorecard_path)
+    if not parsed_path:
+        logging.error("Parsing fehlgeschlagen. Abbruch.")
+        return
+
+    logging.info(f"Parsing erfolgreich: {parsed_path}")
+
+    # Discord Nachricht senden
     try:
-        # 1) Event-ID abrufen
-        event_id = get_event_id()
-        if not event_id:
-            logging.error("Keine Event-ID gefunden. Abbruch.")
-            return
-        logging.info(f"Aktive Event-ID: {event_id}")
-
-        # 2) Scorecard abrufen und speichern
-        player_id = 35703  # Marcel Schneider
-        scorecard_url = f"https://www.europeantour.com/api/sportdata/Scorecard/Strokeplay/Event/{event_id}/Player/{player_id}"
-
-        import requests
-        response = requests.get(scorecard_url, timeout=20)
-        if response.status_code != 200:
-            logging.error(f"Fehler beim Abruf der Scorecard: HTTP {response.status_code}")
-            return
-
-        raw_path = os.path.join(DATA_DIR, f"scorecard_{player_id}.json")
-        with open(raw_path, "w", encoding="utf-8") as f:
-            f.write(response.text)
-        logging.info(f"Scorecard gespeichert unter {raw_path}")
-
-        # 3) Scorecard parsen
-        parsed_path = parse_scorecard(raw_path)
-        if not parsed_path:
-            logging.warning("Keine Scorecard-Daten geparst.")
-            return
-
-        # 4) Discord-Update senden
-        send_discord_update(parsed_path)
-
-        logging.info("Durchlauf abgeschlossen")
-
+        send_discord_message(parsed_path)
     except Exception as e:
-        logging.exception(f"Fehler im Hauptlauf: {e}")
+        logging.exception(f"Fehler beim Senden an Discord: {e}")
+        return
 
+    logging.info("DPWT Marcel Follow abgeschlossen.")
+
+
+# --------------------------------------------------------------------
+# Start
+# --------------------------------------------------------------------
 if __name__ == "__main__":
-    logging.info(f"--- Lauf gestartet {datetime.utcnow().isoformat()} ---")
+    start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logging.info(f"Bot gestartet um {start_time}")
     main()
-    logging.info(f"--- Lauf beendet {datetime.utcnow().isoformat()} ---")
